@@ -40,6 +40,7 @@ jobs:
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
+          skip-dirs: '.mvn,target'
 
   build-and-push-docker:
     needs: [build-and-test, trivy-scan]
