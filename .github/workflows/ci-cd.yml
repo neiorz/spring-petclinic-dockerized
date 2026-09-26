@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
 
   build-docker-image:
     needs: build-and-test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
 
   trivy-scan:
     needs: build-docker-image
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -74,7 +74,7 @@ jobs:
 
   push-to-nexus:
     needs: trivy-scan
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
