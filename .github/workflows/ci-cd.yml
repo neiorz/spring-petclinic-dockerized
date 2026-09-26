@@ -92,7 +92,7 @@ jobs:
       - name: Login to Nexus Repository
         uses: docker/login-action@v3
         with:
-          registry: 127.0.0.1:8082
+          registry: 172.17.0.1:8082
           username: ${{ secrets.NEXUS_USERNAME }}
           password: ${{ secrets.NEXUS_PASSWORD }}
 
