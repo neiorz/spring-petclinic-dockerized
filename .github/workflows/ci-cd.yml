@@ -86,16 +86,8 @@ jobs:
         run: |
           docker load --input /tmp/spring-petclinic.tar
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Login and Push to Nexus
         run: |
           echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 127.0.0.1:8082 -u "${{ secrets.NEXUS_USERNAME }}" --password-stdin
-          docker tag your-image-name:latest 127.0.0.1:8082/spring-petclinic:latest
-          docker push 127.0.0.1:8082/spring-petclinic:latest
-
-      - name: Push Docker Image to Nexus
-        run: |
-          docker tag spring-petclinic:latest ${{ secrets.NEXUS_REGISTRY_URL }}/spring-petclinic:${{ github.sha }}
-          docker push ${{ secrets.NEXUS_REGISTRY_URL }}/spring-petclinic:${{ github.sha }}
+          docker tag spring-petclinic:latest 127.0.0.1:8082/spring-petclinic:${{ github.sha }}
+          docker push 127.0.0.1:8082/spring-petclinic:${{ github.sha }}
