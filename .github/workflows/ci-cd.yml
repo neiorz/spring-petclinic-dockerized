@@ -88,6 +88,6 @@ jobs:
 
       - name: Login and Push to Nexus
         run: |
-          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 127.0.0.1:8082 -u "${{ secrets.NEXUS_USERNAME }}" --password-stdin
-          docker tag spring-petclinic:latest 127.0.0.1:8082/spring-petclinic:${{ github.sha }}
-          docker push 127.0.0.1:8082/spring-petclinic:${{ github.sha }}
+          echo "${{ secrets.NEXUS_PASSWORD }}" | docker login 127.0.0.1:8081 -u "${{ secrets.NEXUS_USERNAME }}" --password-stdin
+          docker tag spring-petclinic:latest 127.0.0.1:8081/repository/docker_hosted/spring-petclinic:${{ github.sha }}
+          docker push 127.0.0.1:8081/repository/docker_hosted/spring-petclinic:${{ github.sha }}
