@@ -62,16 +62,17 @@ jobs:
 
       - name: Load Docker image
         run: |
-          ls -lh /tmp/spring-petclinic.tar
           docker load --input /tmp/spring-petclinic.tar
 
-      - name: Run Trivy vulnerability scanner on Docker image
-        uses: aquasecurity/trivy-action@master
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.16.0
         with:
           image-ref: 'spring-petclinic:latest'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
+          format: 'table'
           exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
 
   push-to-nexus:
     needs: trivy-scan
