@@ -65,7 +65,7 @@ jobs:
           docker load --input /tmp/spring-petclinic.tar
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.16.0
+        uses: aquasecurity/trivy-action@v0.16.0
         with:
           image-ref: 'spring-petclinic:latest'
           format: 'table'
