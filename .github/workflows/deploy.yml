@@ -61,13 +61,32 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
+
+      - name: Stop the deployed mysql (it breaks PostgresIntegrationTests)
+        run: |
+          # Stage 5 of the PREVIOUS run leaves `petclinic-mysql` running, and that
+          # breaks this stage. PostgresIntegrationTests sets
+          # spring.docker.compose.skip.in-tests=false, so Spring Boot enumerates every
+          # RUNNING service of this compose project to build JDBC connection details.
+          # It also picks up `mysql`, which has no host port, and the context dies with
+          # "No host port mapping found for container port 3306". Give it a port and it
+          # instead wins the datasource over postgres and the postgres schema is run
+          # against MySQL. Either way: mysql must be stopped while `mvn verify` runs.
+          # Only the DB is paused - the app container stays up and reconnects.
+          docker compose stop mysql || true
 
       - name: Make mvnw executable
         run: chmod +x mvnw
 
       - name: Maven clean package + run tests
         run: ./mvnw -B --no-transfer-progress clean verify
+
+      - name: Bring mysql back up
+        if: always()
+        run: |
+          # Restore the deployed stack even when the tests failed, so Stages 5-7 and
+          # the live app are not left with a stopped database.
+          docker compose start mysql || true
 
       - name: Build Docker image (always - this is the image the pipeline ships)
         run: |
@@ -79,6 +98,7 @@ jobs:
           docker image inspect "$LOCAL_IMAGE" --format 'Built {{index .RepoTags 0}} = {{.Id}}'
 
       - name: Upload application JAR
+        continue-on-error: true   # blob.core.windows.net DNS is flaky here - never fail the job
         uses: actions/upload-artifact@v7
         with:
           name: petclinic-jar
@@ -88,6 +108,7 @@ jobs:
 
       - name: Upload test + coverage reports
         if: always()
+        continue-on-error: true   # blob.core.windows.net DNS is flaky here - never fail the job
         uses: actions/upload-artifact@v7
         with:
           name: petclinic-test-reports
@@ -119,7 +140,6 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
 
       - name: Make mvnw executable
         run: chmod +x mvnw
@@ -260,6 +280,7 @@ jobs:
 
       - name: Upload Trivy reports
         if: always()
+        continue-on-error: true   # blob.core.windows.net DNS is flaky here - never fail the job
         uses: actions/upload-artifact@v7
         with:
           name: trivy-reports

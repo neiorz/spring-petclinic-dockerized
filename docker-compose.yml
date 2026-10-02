@@ -30,6 +30,12 @@ services:
     volumes:
       - "./conf.d:/etc/mysql/conf.d:ro"
       - mysql_data:/var/lib/mysql
+    # Deliberately NO host port: the host system mysqld already owns 3306 and the
+    # app talks to mysql over the compose network (mysql:3306). For the same reason
+    # `mvn verify` must run while this container is stopped - PostgresIntegrationTests
+    # enables spring.docker.compose support, which picks up every RUNNING service of
+    # this project, and a running `mysql` hijacks the datasource. Stage 1 of the
+    # pipeline stops it before the tests and starts it again afterwards.
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
