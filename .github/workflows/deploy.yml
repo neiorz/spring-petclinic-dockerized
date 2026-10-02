@@ -51,6 +51,7 @@ jobs:
   build-and-test:
     name: "1 | Build & Test"
     runs-on: self-hosted
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -67,6 +68,15 @@ jobs:
 
       - name: Maven clean package + run tests
         run: ./mvnw -B --no-transfer-progress clean verify
+
+      - name: Build Docker image (always - this is the image the pipeline ships)
+        run: |
+          # The later jobs only build "if the image is missing". That is fine for the
+          # first run, but on the next push the image from the PREVIOUS commit still
+          # exists, so the pipeline would tag, push and deploy stale code.
+          # Build it here, once, from this exact checkout.
+          docker build -t "$LOCAL_IMAGE" .
+          docker image inspect "$LOCAL_IMAGE" --format 'Built {{index .RepoTags 0}} = {{.Id}}'
 
       - name: Upload application JAR
         uses: actions/upload-artifact@v7
@@ -94,6 +104,7 @@ jobs:
     name: "2 | SonarQube Analysis (warn only)"
     needs: build-and-test
     runs-on: self-hosted
+    timeout-minutes: 30
     env:
       SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -168,6 +179,7 @@ jobs:
     name: "3 | Trivy Scan (warn only)"
     needs: sonarqube-analysis
     runs-on: self-hosted
+    timeout-minutes: 75
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -192,6 +204,10 @@ jobs:
           exit-code: '0'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+          scanners: 'vuln'                # no secret scan -> much faster
+          timeout: '30m'                  # default 5m dies with "context deadline exceeded"
+          cache: 'false'                  # NEVER upload the ~1GB DB to GitHub cache (stalls forever)
+          cache-dir: '/home/nourz/.cache/trivy'   # keep the DB on the runner, outside the repo
 
       # ---------- 3b) container image scan ----------
       - name: Trivy - container image scan
@@ -204,6 +220,10 @@ jobs:
           exit-code: '0'
           ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
+          scanners: 'vuln'                # no secret scan -> much faster
+          timeout: '30m'                  # default 5m dies with "context deadline exceeded"
+          cache: 'false'                  # NEVER upload the ~1GB DB to GitHub cache (stalls forever)
+          cache-dir: '/home/nourz/.cache/trivy'   # keep the DB on the runner, outside the repo
 
       - name: Publish security summary (warnings only)
         if: always()
@@ -254,6 +274,7 @@ jobs:
     name: "4 | Build & Push to Nexus"
     needs: trivy-scan
     runs-on: self-hosted
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -313,6 +334,7 @@ jobs:
     name: "5 | Deploy via Docker Compose"
     needs: nexus-push
     runs-on: self-hosted
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -329,10 +351,49 @@ jobs:
           echo "APP_IMAGE=${REGISTRY_IMAGE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
       - name: Start the stack (app + database)
+        env:
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: |
           set -e
+          # --- release globally-pinned container names -------------------------
+          # docker-compose.yml pins container_name: petclinic-app / petclinic-mysql.
+          # Those names are GLOBAL, so if a stack was started by hand from another
+          # directory (=> a different compose project) `docker compose up` dies with
+          #   Conflict. The container name "/petclinic-mysql" is already in use
+          # Remove leftovers that belong to another project. Named volumes
+          # (mysql_data, ...) are project-scoped and untouched - no data is lost.
+          PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+          for c in petclinic-app petclinic-mysql; do
+            if docker container inspect "$c" >/dev/null 2>&1; then
+              p="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null || echo unknown)"
+              if [ "$p" != "$PROJECT" ]; then
+                echo "Removing leftover container $c (compose project '$p' != '$PROJECT')"
+                docker rm -f "$c" >/dev/null
+              fi
+            fi
+          done
+
           # Safety net: keep the local tag usable even if the Nexus pull fails.
           docker tag "$LOCAL_IMAGE" "$APP_IMAGE" 2>/dev/null || true
+
+          # docker/login-action in stage 4 uses a temporary DOCKER_CONFIG, so its
+          # credentials do NOT survive into this job. Log in again here, otherwise
+          # `compose pull` gets "no basic auth credentials" and always falls back
+          # to the local image. Never fatal: the local tag is an exact copy of the
+          # image that was pushed to Nexus (same build, same commit SHA).
+          echo "::group::Login to Nexus"
+          if [ -n "$NEXUS_USER" ] && [ -n "$NEXUS_PASSWORD" ]; then
+            if echo "$NEXUS_PASSWORD" | docker login "$NEXUS_DOCKER_REGISTRY" \
+                 -u "$NEXUS_USER" --password-stdin 2>/dev/null; then
+              echo "Logged in to $NEXUS_DOCKER_REGISTRY"
+            else
+              echo "::warning title=Nexus login::Login to $NEXUS_DOCKER_REGISTRY failed - deploying the locally built image."
+            fi
+          else
+            echo "::warning title=Nexus login::NEXUS_USER / NEXUS_PASSWORD are not set - deploying the locally built image."
+          fi
+          echo "::endgroup::"
 
           echo "::group::Pulling application image from Nexus"
           docker compose pull app || \
@@ -368,12 +429,43 @@ jobs:
     name: "6 | Monitoring Setup"
     needs: deploy-local
     runs-on: self-hosted
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      - name: Resolve image to deploy (same value as stage 5)
+        run: |
+          # $GITHUB_ENV does NOT cross job boundaries, so APP_IMAGE set in stage 5
+          # is empty here. Without it compose resolves app to spring-petclinic:latest,
+          # which RECREATES petclinic-app (restarting it) - or, if that tag is missing
+          # locally, tries to pull it from Docker Hub and fails.
+          REGISTRY_IMAGE="${NEXUS_DOCKER_REGISTRY}/${NEXUS_DOCKER_REPO}/${IMAGE_NAME}"
+          echo "APP_IMAGE=${REGISTRY_IMAGE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+          if ! docker image inspect "${REGISTRY_IMAGE}:${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "Image ${REGISTRY_IMAGE}:${GITHUB_SHA} not on the daemon - retagging from ${LOCAL_IMAGE}"
+            if ! docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
+              docker build -t "$LOCAL_IMAGE" .
+            fi
+            docker tag "$LOCAL_IMAGE" "${REGISTRY_IMAGE}:${GITHUB_SHA}"
+          fi
+          docker image inspect "${REGISTRY_IMAGE}:${GITHUB_SHA}" --format 'Deploying: {{.RepoTags}}'
+
       - name: Start Prometheus + Grafana
         run: |
+          # Same global container_name clash as stage 5: petclinic-prometheus /
+          # petclinic-grafana may still exist from a hand-started stack.
+          PROJECT="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}"
+          for c in petclinic-prometheus petclinic-grafana; do
+            if docker container inspect "$c" >/dev/null 2>&1; then
+              p="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null || echo unknown)"
+              if [ "$p" != "$PROJECT" ]; then
+                echo "Removing leftover container $c (compose project '$p' != '$PROJECT')"
+                docker rm -f "$c" >/dev/null
+              fi
+            fi
+          done
           docker compose up -d prometheus grafana
           docker compose ps
 
@@ -420,6 +512,7 @@ jobs:
     name: "7 | Smoke Tests"
     needs: monitoring
     runs-on: self-hosted
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
