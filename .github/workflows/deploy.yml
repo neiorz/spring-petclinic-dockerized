@@ -157,6 +157,19 @@ jobs:
             echo "SKIPPED=false" >> "$GITHUB_ENV"
           fi
 
+      - name: SonarQube server reachable?
+        if: env.SKIPPED == 'false'
+        run: |
+          # The credentials can be set while the server is down (it is heavy and we
+          # deliberately run it under a memory cap), so check before scanning.
+          STATUS=$(curl -fsS --max-time 15 "$SONAR_HOST_URL/api/system/status" 2>/dev/null || echo "unreachable")
+          if printf '%s' "$STATUS" | grep -q '"status":"UP"'; then
+            echo "SonarQube is UP at $SONAR_HOST_URL"
+          else
+            echo "::warning title=SonarQube down::No answer from $SONAR_HOST_URL/api/system/status - the scan below will not succeed, but the pipeline continues."
+            echo "$STATUS"
+          fi
+
       - name: Run SonarQube scan
         id: sonar
         if: env.SKIPPED == 'false'
@@ -524,6 +537,8 @@ jobs:
           echo "Grafana health:"; curl -fsS "$GRAFANA_URL/api/health"; echo
           echo "Datasources provisioned:"
           curl -fsS -u admin:admin "$GRAFANA_URL/api/datasources" | jq -r '.[] | "\(.uid) \(.type) \(.name)"'
+          echo "Dashboards provisioned:"
+          curl -fsS -u admin:admin "$GRAFANA_URL/api/search?type=dash-db" | jq -r '.[] | "  \(.folderTitle // "-") / \(.title)  -> \(.url)"'
 
   # =================================================================
   # STAGE 7 - AUTOMATED SMOKE TESTS  (BLOCKING - a real failure here

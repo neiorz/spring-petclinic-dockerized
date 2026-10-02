@@ -129,6 +129,8 @@ services:
       - grafana_data:/var/lib/grafana
       # auto-creates the Prometheus datasource - no manual clicking needed
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # auto-creates the dashboards in grafana/dashboards/*.json - no importing needed
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
     restart: unless-stopped

@@ -104,8 +104,19 @@ echo
 echo "-- 5. Prometheus --"
 expect_code "${PROM_URL}/-/ready" 200 "Prometheus is ready"
 
-TARGETS=$(curl -sS --max-time 10 "${PROM_URL}/api/v1/targets" 2>/dev/null || true)
-if printf '%s' "$TARGETS" | jq -e '.data.activeTargets[]? | select(.labels.job=="spring-petclinic" and .health=="up")' >/dev/null 2>&1; then
+TARGETS_UP=false
+# A freshly (re)started app is marked DOWN until the next scrape succeeds
+# (scrape_interval is 10s), so retry for a bounded time instead of failing
+# instantly. Stage 7 must not depend on Stage 6 happening to have waited long enough.
+for _try in $(seq 1 10); do
+  TARGETS=$(curl -sS --max-time 10 "${PROM_URL}/api/v1/targets" 2>/dev/null || true)
+  if printf '%s' "$TARGETS" | jq -e '.data.activeTargets[]? | select(.labels.job=="spring-petclinic" and .health=="up")' >/dev/null 2>&1; then
+    TARGETS_UP=true; break
+  fi
+  sleep 3
+done
+
+if [ "$TARGETS_UP" = "true" ]; then
   PASS=$((PASS+1)); printf '  [%s] spring-petclinic target is UP in Prometheus\n' "$(green OK)"
 else
   FAIL=$((FAIL+1)); printf '  [%s] spring-petclinic target is not UP in Prometheus\n' "$(red FAIL)"

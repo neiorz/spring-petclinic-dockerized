@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# Auto-provisions the dashboards shipped in this repo, so Grafana shows real
+# panels the moment `docker compose up -d grafana` runs - no importing by hand.
+providers:
+  - name: Spring PetClinic
+    orgId: 1
+    folder: PetClinic
+    folderUid: petclinic-folder
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
