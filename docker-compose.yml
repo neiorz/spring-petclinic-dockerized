@@ -1,5 +1,23 @@
+##############################################################################
+# Spring PetClinic - local environment used by the CI/CD pipeline
+#
+#   Stage 5  -> docker compose up -d app mysql
+#   Stage 6  -> docker compose up -d prometheus grafana
+#
+# NOTE: always run this from the repository root - the compose project name
+#       is taken from the directory name, which keeps your existing
+#       petclinic-* / nexus containers and volumes in place.
+#
+# Useful commands:
+#   docker compose up -d --build                       # everything (app built locally)
+#   APP_IMAGE=localhost:8082/docker_hosted/spring-petclinic:<sha> docker compose up -d
+#   SPRING_PROFILE=postgres docker compose up -d --profile postgres
+#   docker compose ps / logs -f app
+##############################################################################
+
 services:
 
+  # ------------------------------------------------------------------ MySQL
   mysql:
     image: mysql:9.7
     container_name: petclinic-mysql
@@ -16,9 +34,37 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    restart: unless-stopped
 
+  # ------------------------------------------------------- PostgreSQL (opt-in)
+  # Start it with:  SPRING_PROFILE=postgres docker compose up -d --profile postgres
+  postgres:
+    image: postgres:17-alpine
+    container_name: petclinic-postgres
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASSWORD: petclinic
+    ports:
+      # Published on purpose: PostgresIntegrationTests runs in `mvn verify`
+      # and connects to jdbc:postgresql://localhost:5432/petclinic
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petclinic -d petclinic"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # --------------------------------------------------------- Spring PetClinic
   app:
+    # APP_IMAGE is set by the pipeline so that what is deployed is exactly
+    # what was pushed to Nexus (image: alone is enough when not building).
+    image: ${APP_IMAGE:-spring-petclinic:latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -26,44 +72,78 @@ services:
     ports:
       - "8080:8080"
     environment:
-      SPRING_PROFILES_ACTIVE: mysql
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILE:-mysql}
       MYSQL_URL: jdbc:mysql://mysql:3306/petclinic
       MYSQL_USER: petclinic
       MYSQL_PASS: petclinic
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASS: petclinic
     depends_on:
       mysql:
         condition: service_healthy
+    healthcheck:
+      # eclipse-temurin:17-jre ships curl, so we can hit the real readiness endpoint.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+    restart: unless-stopped
 
+  # ---------------------------------------------------------------- Prometheus
+  # Scrapes /actuator/prometheus from the app (see prometheus.yml)
   prometheus:
     image: prom/prometheus:latest
     container_name: petclinic-prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - app
+    restart: unless-stopped
 
+  # -------------------------------------------------------------------- Grafana
   grafana:
     image: grafana/grafana:latest
     container_name: petclinic-grafana
     ports:
       - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # auto-creates the Prometheus datasource - no manual clicking needed
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
 
+  # --------------------------------------------------------------------- Nexus
+  # 8081 = UI / REST API
+  # 8082 = Docker *HTTP* connector of the Hosted repository (must be published,
+  #        otherwise "docker push localhost:8082/..." is refused)
   nexus:
     image: sonatype/nexus3:latest
     container_name: nexus
     ports:
       - "8081:8081"
+      - "8082:8082"
     volumes:
       - nexus-data:/nexus-data
-    restart: always
+    restart: unless-stopped
 
 volumes:
   mysql_data:
+  postgres_data:
   nexus-data:
+  prometheus_data:
+  grafana_data:
